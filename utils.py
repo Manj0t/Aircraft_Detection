@@ -1,3 +1,4 @@
+from collections import Counter
 import torch
 
 def iou(target, pred, format="corners"):
@@ -35,18 +36,32 @@ def iou(target, pred, format="corners"):
 
     return intersection / (union + 1e-6)
 
-def iou_matrix(box1, box2=None):
+def iou_matrix(box1, box2=None, format="corners"):
     if box2 is None:
         box2 = box1
-    box1_x1 = box1[:, 0]
-    box1_y1 = box1[:, 1]
-    box1_x2 = box1[:, 2]
-    box1_y2 = box1[:, 3]
 
-    box2_x1 = box2[:, 0]
-    box2_y1 = box2[:, 1]
-    box2_x2 = box2[:, 2]
-    box2_y2 = box2[:, 3]
+    if format == "corners":
+        box1_x1 = box1[:, 0]
+        box1_y1 = box1[:, 1]
+        box1_x2 = box1[:, 2]
+        box1_y2 = box1[:, 3]
+
+        box2_x1 = box2[:, 0]
+        box2_y1 = box2[:, 1]
+        box2_x2 = box2[:, 2]
+        box2_y2 = box2[:, 3]
+
+    elif format == "midpoint":
+        box1_x1 = box1[:, 0] - box1[: , 2] / 2
+        box1_y1 = box1[:, 1] - box1[: , 3] / 2
+        box1_x2 = box1[: , 0] + box1[: , 2] / 2
+        box1_y2 = box1[: , 1] + box1[: , 3] / 2
+        box2_x1 = box2[:, 0] - box2[:, 2] / 2
+        box2_y1 = box2[:, 1] - box2[:, 3] / 2
+        box2_x2 = box2[:, 0] + box2[:, 2] / 2
+        box2_y2 = box2[:, 1] + box2[:, 3] / 2
+    else:
+        raise Exception("format not supported")
 
     A = box1.shape[0]
     B = box2.shape[0]
@@ -73,12 +88,12 @@ def iou_matrix(box1, box2=None):
     union = area1 + area2 - intersection
 
     ious = intersection / (union + 1e-6)
-    if box1.data_ptr() == box2.data_ptr():
-        ious.fill_diagonal_(0)
 
     return ious
 
 # Non max suppression
+
+# May not be needed, will keep here commented out if issues arise with current nms later
 # def nms(pred, conf_thresh=0.5, iou_thresh=0.5, format="corners"):
 #     # pred: [[classNum, prediction, x1, y1, x2, y2], [...], [...]]
 #     assert type(pred) == list
@@ -107,7 +122,8 @@ def nms(pred, conf_thresh=0.5, iou_thresh=0.5, format="corners"):
     assert type(pred) == list
     pred = [p for p in pred if p[1] > conf_thresh]
     # sorts by class and confidence assuming there are < 1000 classes
-    pred = sorted(pred, key=lambda x: x[1], reverse=True)
+    # Changes made, this sort may not be needed but will keep it commented out in case it is found that it is needed later on
+    # pred = sorted(pred, key=lambda x: x[1], reverse=True)
 
     groups = {}
 
@@ -121,21 +137,31 @@ def nms(pred, conf_thresh=0.5, iou_thresh=0.5, format="corners"):
 
     for boxes in groups.values():
         boxes = torch.tensor(boxes)
-        ious = iou_matrix(boxes[:, 2:])
 
-        keep_mask = torch.ones(boxes.shape[0], dtype=torch.bool)
-        for i in range(len(boxes)):
-            # Suppress boxes with IoU greater than the threshold
-            iou_values = ious[i]
-            suppress_mask = iou_values > iou_thresh
-            keep_mask[suppress_mask] = False
-        kept_boxes.append(boxes[keep_mask])
+        predictions = boxes[:, 1]
+        indices = predictions.argsort(descending=True)
+        print(boxes[:, 2:])
+        iou_mat = iou_matrix(boxes[:, 2:], format=format)
+        keep = []
 
-    return torch.cat(kept_boxes).tolist()
+        while indices.numel() > 0:
+            current = indices[0]
+            keep.append(current.item())
+
+            if indices.numel() == 1:
+                break
+
+            rest = indices[1:]
+            curr_iou = iou_mat[current, rest]
+            indices = rest[curr_iou <= iou_thresh]
+
+        kept_boxes.append(boxes[keep])
+
+    return torch.cat(kept_boxes).tolist() if kept_boxes else []
 
 
 def mAP(pred_boxes, gt_boxes, num_classes, iou_thresh=0.5, box_format="corners"):
-        # pred_boxes = [[train_idx, class_pred, prob, x1, y1, x2, y2], ...]
+    # gt_boxes and pred_boxes = [[train_idx, class_pred, prob, x1, y1, x2, y2], ...]
     average_precisions = []
     epsilon = 1e-6
 
@@ -150,94 +176,62 @@ def mAP(pred_boxes, gt_boxes, num_classes, iou_thresh=0.5, box_format="corners")
             gt_dict[box[1]] = []
         gt_dict[box[1]].append(box)
 
+    amt_boxes = Counter([gt[0] for gt in gt_boxes])
+
+    for key, val in amt_boxes.items():
+        amt_boxes[key] = torch.zeros(val)
+
+
     for c in range(num_classes):
+        # If the class is not in detection_dict or gt_dict, skip loop
+        if c not in detection_dict or c not in gt_dict:
+            continue
+
         detections = detection_dict[c]
-        class_gt = gt_dict[c]
+        # Sort by confidence score so we take the box with the higher confidence score with greater priority
+        detections = sorted(detections, key=lambda x: x[2], reverse=True)
+        gt_class = gt_dict[c]
 
-        detections = torch.tensor(detections)
-        class_gt = torch.tensor(class_gt)
-
-        ious = iou_matrix(detections[:, 3:], class_gt[:, 3:])
-        FP_maks = ious < iou_thresh
+        total_true_boxes = len(gt_class)
 
 
+        FP = torch.zeros(len(detections))
+        TP = torch.zeros(len(detections))
 
+        for i, detection in enumerate(detections):
+            curr_gts = []
+            for gt_img in gt_class:
+                if gt_img[0] == detection[0]:
+                    curr_gts.append(gt_img)
 
+            if len(curr_gts) == 0:
+                FP[i] = 1
+                continue
 
+            curr_gts_tensor = torch.tensor([gts[3:] for gts in curr_gts])
+            detection_tensor = torch.tensor(detection[3:])
+            detection_tensor.unsqueeze_(0)
 
+            iou_mat = iou_matrix(curr_gts_tensor, detection_tensor, format=box_format)
 
-pred_boxes = [
-    # Class 0 (Aircraft)
-    [0, 0.92, 50, 50, 150, 150],  # High confidence, good prediction
-    [0, 0.75, 60, 60, 160, 160],  # Overlapping with the first one
-    [0, 0.65, 55, 55, 155, 155],  # Lower confidence, overlapping with the first two
-    [0, 0.80, 80, 80, 180, 180],  # Overlapping, but still confident
-    [0, 0.30, 500, 500, 600, 600],  # Low confidence, far from other boxes
+            max_iou, max_iou_idx = iou_mat.max(dim=0)
+            max_iou = max_iou.item()
+            max_iou_idx = max_iou_idx.item()
 
-    # Class 1 (Helicopter)
-    [1, 0.85, 200, 200, 300, 300],  # Confident, non-overlapping
-    [1, 0.90, 210, 210, 310, 310],  # High confidence, overlapping with the first one
-    [1, 0.40, 600, 600, 700, 700],  # Low confidence, far from others
-    [1, 0.78, 230, 230, 330, 330],  # Overlapping with the first one, decent confidence
+            if max_iou > iou_thresh and amt_boxes[detection[0]][max_iou_idx] == 0:
+                TP[i] = 1
+                amt_boxes[detection[0]][max_iou_idx] = 1
+            else:
+                FP[i] = 1
 
-    # Class 2 (Car)
-    [2, 0.60, 100, 100, 250, 250],  # Overlapping with other boxes
-    [2, 0.82, 200, 200, 400, 400],  # High confidence, some overlap
-    [2, 0.50, 300, 300, 500, 500],  # Low confidence
-    [2, 0.95, 350, 350, 550, 550],  # Very high confidence, overlapping
-    [2, 0.55, 100, 100, 150, 150],  # Overlapping with first car box
+        TP = TP.cumsum(dim=0)
+        FP = FP.cumsum(dim=0)
 
-    # Class 3 (Bicycle)
-    [3, 0.80, 300, 300, 450, 450],  # Confident, overlapping with car
-    [3, 0.75, 350, 350, 500, 500],  # Decent confidence, overlap
-    [3, 0.60, 400, 400, 600, 600],  # Low confidence
-    [3, 0.90, 450, 450, 650, 650],  # High confidence, overlaps with other bikes
-    [3, 0.88, 500, 500, 700, 700],  # High confidence, far from others
-]
+        recall = TP / (total_true_boxes + epsilon)
+        precisions = torch.divide(TP, (TP + FP + epsilon))
+        precisions = torch.cat((torch.tensor([1]), precisions))
+        recall = torch.cat((torch.tensor([0]), recall))
 
-# IoU and NMS Testing
-print("Original Predicted Boxes:")
-for box in pred_boxes:
-    print(box)
+        average_precisions.append(torch.trapz(precisions, recall))
 
-# Apply NMS
-output_boxes = nms(pred_boxes, conf_thresh=0.7, iou_thresh=0.5)
-
-print("\nAfter NMS (Non-Max Suppression):")
-for box in output_boxes:
-    print(box)
-
-#     # [2, 0.95, 350, 350, 550, 550]
-#     # [0, 0.92, 50, 50, 150, 150]
-#     # [1, 0.9, 210, 210, 310, 310]
-#     # [3, 0.9, 450, 450, 650, 650]
-#     # [3, 0.88, 500, 500, 700, 700]
-#     [1, 0.85, 200, 200, 300, 300]
-#     # [2, 0.82, 200, 200, 400, 400]
-#     # [0, 0.8, 80, 80, 180, 180]
-#     # [3, 0.8, 300, 300, 450, 450]
-#     # [1, 0.78, 230, 230, 330, 330]
-#     [0, 0.75, 60, 60, 160, 160]
-#     # [3, 0.75, 350, 350, 500, 500]
-#     [2, 0.6, 100, 100, 250, 250]
-#     [3, 0.6, 400, 400, 600, 600]
-#     [2, 0.55, 100, 100, 150, 150]
-#
-#     # [2, 0.95, 350, 350, 550, 550]
-#     # [2, 0.82, 200, 200, 400, 400]
-#     # [0, 0.92, 50, 50, 150, 150]
-#     # [0, 0.8, 80, 80, 180, 180]
-#     # [1, 0.9, 210, 210, 310, 310]
-#     # [1, 0.78, 230, 230, 330, 330]
-#     # [3, 0.9, 450, 450, 650, 650]
-#     # [3, 0.88, 500, 500, 700, 700]
-#     # [3, 0.8, 300, 300, 450, 450]
-#     # [3, 0.75, 350, 350, 500, 500]
-#
-#
-# [2, 0.95, 350, 350, 550, 550]
-# [0, 0.92, 50, 50, 150, 150]
-# [0, 0.75, 60, 60, 160, 160]
-# [1, 0.9, 210, 210, 310, 310]
-# [1, 0.85, 200, 200, 300, 300]
-# [3, 0.9, 450, 450, 650, 650]
+    return sum(average_precisions) / (len(average_precisions) + epsilon)
