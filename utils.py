@@ -36,6 +36,15 @@ def iou(target, pred, format="corners"):
 
     return intersection / (union + 1e-6)
 
+def iou_width_height(boxes1, boxes2):
+    intersection = torch.min(boxes1[..., 0], boxes2[..., 0]) * torch.min(
+        boxes1[..., 1], boxes2[..., 1]
+    )
+    union = (
+        boxes1[..., 0] * boxes1[..., 1] + boxes2[..., 0] * boxes2[..., 1] - intersection
+    )
+    return intersection / union
+
 def iou_matrix(box1, box2=None, format="corners"):
     if box2 is None:
         box2 = box1
