@@ -5,17 +5,17 @@ import torch
 from albumentations.pytorch import ToTensorV2
 from utils import seed_everything
 
-DATASET = 'PASCAL_VOC'
+DATASET = 'COCO'
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # seed_everything()  # If you want deterministic behavior
 NUM_WORKERS = 4
-BATCH_SIZE = 32
+BATCH_SIZE = 8
 IMAGE_SIZE = 416
-NUM_CLASSES = 20
-LEARNING_RATE = 1e-5
+NUM_CLASSES = 80
+LEARNING_RATE = 3e-4
 WEIGHT_DECAY = 1e-4
 NUM_EPOCHS = 100
-CONF_THRESHOLD = 0.05
+CONF_THRESHOLD = 0.4
 MAP_IOU_THRESH = 0.5
 NMS_IOU_THRESH = 0.45
 S = [IMAGE_SIZE // 32, IMAGE_SIZE // 16, IMAGE_SIZE // 8]
@@ -26,11 +26,14 @@ CHECKPOINT_FILE = "checkpoint.pth.tar"
 IMG_DIR = DATASET + "/images/"
 LABEL_DIR = DATASET + "/labels/"
 
-ANCHORS = [
-    [(0.28, 0.22), (0.38, 0.48), (0.9, 0.78)],
-    [(0.07, 0.15), (0.15, 0.11), (0.14, 0.29)],
-    [(0.02, 0.03), (0.04, 0.07), (0.08, 0.06)],
-]  # Note these have been rescaled to be between [0, 1]
+ANCHORS = [[(10,13), (16,30), (33,23)],
+[(30,61), (62,45), (59,119)],
+[(116,90), (156,198), (373,326)]]
+#     [
+#     [(0.28, 0.22), (0.38, 0.48), (0.9, 0.78)],
+#     [(0.07, 0.15), (0.15, 0.11), (0.14, 0.29)],
+#     [(0.02, 0.03), (0.04, 0.07), (0.08, 0.06)],
+# ]  # Note these have been rescaled to be between [0, 1]
 
 
 scale = 1.1
@@ -49,7 +52,10 @@ train_transforms = A.Compose(
                 A.ShiftScaleRotate(
                     rotate_limit=20, p=0.5, border_mode=cv2.BORDER_CONSTANT
                 ),
-                A.Affine(shear={"x": 15, "y": 15}, p=0.5, cval=0, fit_output=False)            ],
+                A.Compose([
+                    A.ShiftScaleRotate(shift_limit=0.0625, scale_limit=0.1, rotate_limit=15, p=0.5),
+                    # other transforms...
+                ])            ],
             p=1.0,
         ),
         A.HorizontalFlip(p=0.5),
@@ -98,7 +104,8 @@ PASCAL_CLASSES = [
     "tvmonitor"
 ]
 
-COCO_LABELS = ['person',
+COCO_LABELS = [
+ 'person',
  'bicycle',
  'car',
  'motorcycle',
