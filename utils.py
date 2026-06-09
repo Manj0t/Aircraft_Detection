@@ -2,6 +2,7 @@ from collections import Counter
 import torch
 import config
 import os
+from tqdm import tqdm
 
 
 def iou(target, pred, format="corners"):
@@ -152,7 +153,7 @@ def nms(pred, conf_thresh=0.5, iou_thresh=0.5, format="corners"):
 
         predictions = boxes[:, 1]
         indices = predictions.argsort(descending=True)
-        print(boxes[:, 2:])
+        # printt(boxes[:, 2:])
         iou_mat = iou_matrix(boxes[:, 2:], format=format)
         keep = []
 
@@ -338,11 +339,11 @@ def get_evaluation_bboxes(
         )
 
         for idx in range(batch_size):
-            nms_boxes = non_max_suppression(
+            nms_boxes = nms(
                 bboxes[idx],
-                iou_threshold=iou_threshold,
-                threshold=threshold,
-                box_format=box_format,
+                conf_thresh=threshold,
+                iou_thresh=iou_threshold,
+                format=box_format,
             )
 
             for nms_box in nms_boxes:
@@ -550,8 +551,8 @@ def plot_couple_examples(model, loader, thresh, iou_thresh, anchors):
         model.train()
 
     for i in range(batch_size):
-        nms_boxes = non_max_suppression(
-            bboxes[i], iou_threshold=iou_thresh, threshold=thresh, box_format="midpoint",
+        nms_boxes = nms(
+            bboxes[i], conf_thresh=thresh, iou_thresh=iou_thresh, format="midpoint",
         )
         plot_image(x[i].permute(1,2,0).detach().cpu(), nms_boxes)
 

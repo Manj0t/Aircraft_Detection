@@ -46,6 +46,7 @@ def train_fn(train_loaderm, model, optimizer, loss_fn, scaler, scaled_anchors):
             loop.set_postfix(loss=mean_loss)
 
 def main():
+    print(config.DEVICE)
     model = YOLOv3(num_classes=config.NUM_CLASSES).to(config.DEVICE)
     optimzer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY)
     loss_fn = YOLOLoss()
@@ -56,12 +57,19 @@ def main():
     if config.LOAD_MODEL:
         load_checkpoint(config.CHECKPOINT_FILE, model, optimzer, config.LEARNING_RATE)
 
+
     scaled_anchors = (
         torch.tensor(config.ANCHORS) * torch.tensor(config.S).unsqueeze(1).unsqueeze(2).repeat(1, 3, 2)
     ).to(config.DEVICE)
 
-    print("HERE")
+    if config.LOAD_MODEL:
+        pred_boxes, true_boxes = get_evaluation_bboxes(test_loader, model, iou_threshold=config.NMS_IOU_THRESH,
+                                                       anchors=config.ANCHORS, threshold=config.CONF_THRESHOLD)
+        mapval = mAP(pred_boxes, true_boxes, config.NUM_CLASSES, iou_thresh=config.MAP_IOU_THRESH, box_format="midpoint")
+        print(f"MAP: {mapval}")
     for epoch in range(config.NUM_EPOCHS):
+
+
         train_fn(train_loader, model, optimzer, loss_fn, scaler, scaled_anchors)
         print("EPOCH", epoch)
         if config.SAVE_MODEL:
@@ -71,9 +79,9 @@ def main():
             print("On Test Loader:")
             check_class_accuracy(model, test_loader, threshold=config.CONF_THRESHOLD)
 
-            prd_boxes, true_boxes = get_evaluation_bboxes(test_loader, model, iou_threshold=config.NMS_IOU_THRESH, anchors=config.ANCHORS, threshold=config.CONF_THRESHOLD)
+            pred_boxes, true_boxes = get_evaluation_bboxes(test_loader, model, iou_threshold=config.NMS_IOU_THRESH, anchors=config.ANCHORS, threshold=config.CONF_THRESHOLD)
             mapval = mAP(pred_boxes, true_boxes, config.NUM_CLASSES, iou_thresh=config.MAP_IOU_THRESH, box_format="midpoint")
-            print(f"MAP: {mapval.item()}")
+            print(f"MAP: {mapval}")
 
 if __name__ == "__main__":
     print("Run")
